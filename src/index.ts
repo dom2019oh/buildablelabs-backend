@@ -7,7 +7,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger as honoLogger } from 'hono/logger';
-import { bearerAuth } from 'hono/bearer-auth';
 import { env } from './config/env';
 import { logger } from './utils/logger';
 
@@ -109,23 +108,22 @@ async function start() {
   await PreviewManager.initialize();
   logger.info('Preview manager initialized');
   
-  // Start server
-  const port = env.PORT;
-  logger.info({ port }, `Server listening on port ${port}`);
-  
   return app;
 }
 
-// Export for Bun
-export default {
-  port: env.PORT,
-  fetch: app.fetch,
-};
+// Start the server
+const port = Number(env.PORT) || 3000;
 
-// Start if running directly
-if (import.meta.main) {
-  start().catch((err) => {
+start()
+  .then(() => {
+    logger.info({ port }, `Server listening on port ${port}`);
+    Bun.serve({
+      port,
+      fetch: app.fetch,
+    });
+  })
+  .catch((err) => {
     logger.fatal({ err }, 'Failed to start server');
     process.exit(1);
   });
-}
+
