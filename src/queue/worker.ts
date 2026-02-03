@@ -51,56 +51,51 @@ export async function initializeQueue(): Promise<void> {
     return;
   }
 
-  try {
-    // Create queue
-    queue = new Queue<GenerationJobData>(QUEUE_NAME, {
+  // Create queue
+  queue = new Queue<GenerationJobData>(QUEUE_NAME, {
+    connection,
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 1000,
+      },
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    },
+  });
+
+  // Create worker
+  worker = new Worker<GenerationJobData>(
+    QUEUE_NAME,
+    async (job: Job<GenerationJobData>) => {
+      logger.info({ jobId: job.id, sessionId: job.data.sessionId }, 'Processing generation job');
+
+      const pipeline = new GenerationPipeline(job.data);
+      await pipeline.run();
+
+      logger.info({ jobId: job.id, sessionId: job.data.sessionId }, 'Generation job completed');
+    },
+    {
       connection,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 1000,
-        },
-        removeOnComplete: 100,
-        removeOnFail: 50,
-      },
-    });
+      concurrency: 3, // Process 3 jobs at a time
+    }
+  );
 
-    // Create worker
-    worker = new Worker<GenerationJobData>(
-      QUEUE_NAME,
-      async (job: Job<GenerationJobData>) => {
-        logger.info({ jobId: job.id, sessionId: job.data.sessionId }, 'Processing generation job');
+  // Event handlers
+  worker.on('completed', (job) => {
+    logger.info({ jobId: job.id }, 'Job completed');
+  });
 
-        const pipeline = new GenerationPipeline(job.data);
-        await pipeline.run();
+  worker.on('failed', (job, error) => {
+    logger.error({ jobId: job?.id, error }, 'Job failed');
+  });
 
-        logger.info({ jobId: job.id, sessionId: job.data.sessionId }, 'Generation job completed');
-      },
-      {
-        connection,
-        concurrency: 3,
-      }
-    );
+  worker.on('error', (error) => {
+    logger.error({ error }, 'Worker error');
+  });
 
-    worker.on('completed', (job) => {
-      logger.info({ jobId: job.id }, 'Job completed');
-    });
-
-    worker.on('failed', (job, error) => {
-      logger.error({ jobId: job?.id, error }, 'Job failed');
-    });
-
-    worker.on('error', (error) => {
-      logger.warn({ error }, 'Worker error - queue may be unavailable');
-    });
-
-    logger.info('Queue initialized');
-  } catch (error) {
-    logger.warn({ error }, 'Redis unavailable - queue disabled, using direct execution');
-    queue = null;
-    worker = null;
-  }
+  logger.info('Queue initialized');
 }
 
 // =============================================================================
