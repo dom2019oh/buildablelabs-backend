@@ -1,300 +1,269 @@
 // =============================================================================
-// Coder Service - File Generation Phase (Grok Primary)
+// Buildable AI - Model Definitions & Client Initialization
 // =============================================================================
-// Generates individual files based on the project plan using Buildable AI.
-// Uses Grok for primary code generation with OpenAI fallback.
+// Unified model registry for Grok, OpenAI, and Gemini providers.
+// All API keys loaded from environment - never hardcoded.
 
+import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { aiLogger as logger } from '../../utils/logger';
-import { getBuildableAI, type BuildableAIResponse } from './buildable-ai';
-import { TaskType } from './models';
-import type { ProjectPlan } from './pipeline';
+import { env } from '../../config/env';
 
 // =============================================================================
-// TYPES
+// MODEL DEFINITIONS
 // =============================================================================
 
-interface FileSpec {
-  path: string;
-  purpose: string;
-  dependencies: string[];
-  priority?: number;
+export enum AIProvider {
+  GROK = 'grok',
+  OPENAI = 'openai',
+  GEMINI = 'gemini',
 }
 
-interface ExistingFile {
-  file_path: string;
-  content: string;
+export enum TaskType {
+  PLANNING = 'planning',
+  CODING = 'coding',
+  DEBUGGING = 'debugging',
+  REASONING = 'reasoning',
+  MULTIMODAL = 'multimodal',
+  VALIDATION = 'validation',
+  REFINEMENT = 'refinement',
 }
 
-export interface CoderResult {
-  content: string;
-  tokensUsed: number;
-  cost: number;
-  model: string;
-}
+// Grok models (xAI) - Primary for coding with 2M context
+export const GrokModels = {
+  GROK_4_1_FAST: 'grok-4.1-fast',        // Fast general purpose
+  GROK_CODE_FAST_1: 'grok-code-fast-1',   // Optimized for code generation
+  GROK_VISION: 'grok-vision-beta',        // Multimodal capability
+} as const;
 
-// =============================================================================
-// FRAMEWORK CONFIGS
-// =============================================================================
+// OpenAI models - Advanced reasoning & fallbacks
+export const OpenAIModels = {
+  GPT_5: 'gpt-5',              // Most capable
+  GPT_5_MINI: 'gpt-5-mini',    // Balanced performance/cost
+  GPT_5_NANO: 'gpt-5-nano',    // Fast, cost-effective
+  GPT_5_2: 'gpt-5.2',          // Latest with enhanced reasoning
+} as const;
 
-const FrameworkConfigs: Record<string, {
-  language: string;
-  extension: string;
-  importStyle: string;
-  componentStyle: string;
-}> = {
-  react: {
-    language: 'TypeScript',
-    extension: 'tsx',
-    importStyle: `import X from '@/components/X'`,
-    componentStyle: 'functional components with hooks',
+// Gemini models - Planning & multimodal
+export const GeminiModels = {
+  GEMINI_2_5_FLASH: 'gemini-2.5-flash',           // Fast, balanced
+  GEMINI_2_5_PRO: 'gemini-2.5-pro',               // High capability
+  GEMINI_3_FLASH_PREVIEW: 'gemini-3-flash-preview', // Next-gen fast
+  GEMINI_3_PRO_PREVIEW: 'gemini-3-pro-preview',     // Next-gen pro
+} as const;
+
+// Model routing configuration
+export const ModelRouting: Record<TaskType, { provider: AIProvider; model: string; fallback?: { provider: AIProvider; model: string } }> = {
+  [TaskType.PLANNING]: {
+    provider: AIProvider.GEMINI,
+    model: GeminiModels.GEMINI_2_5_PRO,
+    fallback: { provider: AIProvider.OPENAI, model: OpenAIModels.GPT_5_MINI },
   },
-  vue: {
-    language: 'TypeScript',
-    extension: 'vue',
-    importStyle: `import X from '@/components/X.vue'`,
-    componentStyle: 'Composition API with <script setup>',
+  [TaskType.CODING]: {
+    provider: AIProvider.GROK,
+    model: GrokModels.GROK_CODE_FAST_1,
+    fallback: { provider: AIProvider.OPENAI, model: OpenAIModels.GPT_5 },
   },
-  svelte: {
-    language: 'TypeScript',
-    extension: 'svelte',
-    importStyle: `import X from '$lib/components/X.svelte'`,
-    componentStyle: 'Svelte components with TypeScript',
+  [TaskType.DEBUGGING]: {
+    provider: AIProvider.GROK,
+    model: GrokModels.GROK_CODE_FAST_1,
+    fallback: { provider: AIProvider.OPENAI, model: OpenAIModels.GPT_5_MINI },
   },
-  node: {
-    language: 'TypeScript',
-    extension: 'ts',
-    importStyle: `import { x } from './module'`,
-    componentStyle: 'ES modules with async/await',
+  [TaskType.REASONING]: {
+    provider: AIProvider.OPENAI,
+    model: OpenAIModels.GPT_5_2,
+    fallback: { provider: AIProvider.GEMINI, model: GeminiModels.GEMINI_2_5_PRO },
   },
-  django: {
-    language: 'Python',
-    extension: 'py',
-    importStyle: `from app.models import X`,
-    componentStyle: 'Django class-based views',
+  [TaskType.MULTIMODAL]: {
+    provider: AIProvider.GEMINI,
+    model: GeminiModels.GEMINI_3_PRO_PREVIEW,
+    fallback: { provider: AIProvider.GROK, model: GrokModels.GROK_VISION },
   },
-  'react-native': {
-    language: 'TypeScript',
-    extension: 'tsx',
-    importStyle: `import X from '@/components/X'`,
-    componentStyle: 'React Native functional components',
+  [TaskType.VALIDATION]: {
+    provider: AIProvider.GROK,
+    model: GrokModels.GROK_4_1_FAST,
+    fallback: { provider: AIProvider.OPENAI, model: OpenAIModels.GPT_5_NANO },
   },
-  flutter: {
-    language: 'Dart',
-    extension: 'dart',
-    importStyle: `import 'package:app/widgets/x.dart'`,
-    componentStyle: 'Flutter StatelessWidget/StatefulWidget',
+  [TaskType.REFINEMENT]: {
+    provider: AIProvider.OPENAI,
+    model: OpenAIModels.GPT_5,
+    fallback: { provider: AIProvider.GROK, model: GrokModels.GROK_CODE_FAST_1 },
   },
 };
 
 // =============================================================================
-// CODER CLASS
+// CLIENT INITIALIZATION
 // =============================================================================
 
-export class Coder {
-  private ai = getBuildableAI();
+let grokClient: OpenAI | null = null;
+let openaiClient: OpenAI | null = null;
+let geminiClient: GoogleGenerativeAI | null = null;
 
-  /**
-   * Generate a single file based on the plan and context
-   * Uses Grok (via Buildable AI) for code generation tasks
-   */
-  async generateFile(
-    fileSpec: FileSpec,
-    plan: ProjectPlan,
-    existingFiles: ExistingFile[],
-    originalPrompt: string
-  ): Promise<CoderResult> {
-    // Determine framework config
-    const framework = plan.framework || 'react';
-    const config = FrameworkConfigs[framework] || FrameworkConfigs.react;
-
-    // Build context from dependencies
-    const dependencyContents = fileSpec.dependencies
-      .map(dep => {
-        const file = existingFiles.find(f => f.file_path === dep);
-        if (file) {
-          // Truncate large files
-          const content = file.content.length > 2000 
-            ? file.content.slice(0, 2000) + '\n// ... truncated'
-            : file.content;
-          return `### ${dep}\n\`\`\`${config.language.toLowerCase()}\n${content}\n\`\`\``;
-        }
-        return null;
-      })
-      .filter(Boolean)
-      .join('\n\n');
-
-    const systemPrompt = `You are an expert ${config.language} developer specializing in ${framework}.
-Generate clean, production-ready code.
-
-Stack: ${this.getStackDescription(plan)}
-
-Rules:
-1. Output ONLY the file content - no markdown, no explanation, no code fences
-2. Use ${config.language} with proper types
-3. Use ${config.importStyle} for imports
-4. Use ${config.componentStyle}
-5. Keep components under 200 lines
-6. Include helpful comments for complex logic
-7. Handle loading/error states where appropriate
-8. Make it production-ready with proper error handling
-9. Use semantic tokens for colors (bg-background, text-foreground, etc.)
-10. Follow best practices for ${framework}
-
-DO NOT include \`\`\`${config.language.toLowerCase()} or any markdown - output raw code only.`;
-
-    const userPrompt = `Generate the file: ${fileSpec.path}
-
-Purpose: ${fileSpec.purpose}
-
-Original user request:
-${originalPrompt}
-
-Project plan context:
-- Type: ${plan.projectType}
-- Description: ${plan.description}
-- Framework: ${framework}
-- Styling: ${plan.styling || 'tailwind'}
-- Related files: ${plan.files.map(f => f.path).join(', ')}
-
-${dependencyContents ? `Dependency files for context:\n\n${dependencyContents}` : ''}
-
-Generate the complete file content now.`;
-
-    logger.info({
-      file: fileSpec.path,
-      dependencies: fileSpec.dependencies.length,
-      framework,
-    }, 'Generating file');
-
-    const response = await this.ai.execute({
-      task: TaskType.CODING,
-      systemPrompt,
-      userPrompt,
-      temperature: 0.2, // Lower temperature for consistent code
-      maxTokens: 8000,
+export function getGrokClient(): OpenAI {
+  if (!grokClient) {
+    if (!env.GROK_API_KEY) {
+      throw new Error('GROK_API_KEY is not configured');
+    }
+    grokClient = new OpenAI({
+      apiKey: env.GROK_API_KEY,
+      baseURL: 'https://api.x.ai/v1',
     });
-
-    // Clean up any accidental markdown wrapping
-    let cleanContent = response.content.trim();
-    if (cleanContent.startsWith('```')) {
-      cleanContent = cleanContent.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-    }
-
-    logger.info({
-      file: fileSpec.path,
-      contentLength: cleanContent.length,
-      provider: response.provider,
-      model: response.model,
-    }, 'File generated');
-
-    return {
-      content: cleanContent,
-      tokensUsed: response.usage.totalTokens,
-      cost: response.cost,
-      model: response.model,
-    };
+    logger.info('Grok client initialized');
   }
+  return grokClient;
+}
 
-  /**
-   * Generate a diff/patch for an existing file
-   */
-  async generateDiff(
-    filePath: string,
-    existingContent: string,
-    changeRequest: string,
-    context?: string
-  ): Promise<CoderResult> {
-    const systemPrompt = `You are modifying an existing file. Apply the requested changes precisely.
-Output ONLY the complete modified file content - no explanations, no markdown.
-Preserve all working code that doesn't need to change.`;
-
-    const userPrompt = `File: ${filePath}
-
-Current content:
-\`\`\`
-${existingContent}
-\`\`\`
-
-Changes to apply: ${changeRequest}
-
-${context ? `Additional context: ${context}` : ''}
-
-Output the complete modified file content.`;
-
-    const response = await this.ai.execute({
-      task: TaskType.CODING,
-      systemPrompt,
-      userPrompt,
-      temperature: 0.1,
-      maxTokens: 8000,
+export function getOpenAIClient(): OpenAI {
+  if (!openaiClient) {
+    if (!env.OPENAI_API_KEY) {
+      throw new Error('OPENAI_API_KEY is not configured');
+    }
+    openaiClient = new OpenAI({
+      apiKey: env.OPENAI_API_KEY,
     });
-
-    let cleanContent = response.content.trim();
-    if (cleanContent.startsWith('```')) {
-      cleanContent = cleanContent.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-    }
-
-    return {
-      content: cleanContent,
-      tokensUsed: response.usage.totalTokens,
-      cost: response.cost,
-      model: response.model,
-    };
+    logger.info('OpenAI client initialized');
   }
+  return openaiClient;
+}
 
-  /**
-   * Generate multiple related files in batch
-   */
-  async generateBatch(
-    files: FileSpec[],
-    plan: ProjectPlan,
-    existingFiles: ExistingFile[],
-    originalPrompt: string
-  ): Promise<Map<string, CoderResult>> {
-    const results = new Map<string, CoderResult>();
-
-    // Generate files in dependency order
-    const sortedFiles = [...files].sort((a, b) => 
-      (a.priority ?? 99) - (b.priority ?? 99)
-    );
-
-    for (const fileSpec of sortedFiles) {
-      const result = await this.generateFile(
-        fileSpec,
-        plan,
-        existingFiles,
-        originalPrompt
-      );
-
-      results.set(fileSpec.path, result);
-
-      // Add to existing files for context in subsequent generations
-      existingFiles.push({
-        file_path: fileSpec.path,
-        content: result.content,
-      });
+export function getGeminiClient(): GoogleGenerativeAI {
+  if (!geminiClient) {
+    if (!env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY is not configured');
     }
-
-    return results;
+    geminiClient = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+    logger.info('Gemini client initialized');
   }
+  return geminiClient;
+}
 
-  /**
-   * Get stack description for prompts
-   */
-  private getStackDescription(plan: ProjectPlan): string {
-    const framework = plan.framework || 'react';
-    const styling = plan.styling || 'tailwind';
-
-    const stacks: Record<string, string> = {
-      react: `React 18, TypeScript, Vite, ${styling === 'tailwind' ? 'Tailwind CSS, shadcn/ui' : styling}`,
-      vue: `Vue 3, TypeScript, Vite, ${styling === 'tailwind' ? 'Tailwind CSS' : styling}`,
-      svelte: `SvelteKit, TypeScript, ${styling === 'tailwind' ? 'Tailwind CSS' : styling}`,
-      node: 'Node.js, TypeScript, Hono/Express, Zod',
-      django: 'Django 5, Python 3.12, Django REST Framework',
-      'react-native': 'React Native, TypeScript, Expo, NativeWind',
-      flutter: 'Flutter 3, Dart, Material Design 3',
-    };
-
-    return stacks[framework] || stacks.react;
+// Check if a provider is available (has API key)
+export function isProviderAvailable(provider: AIProvider): boolean {
+  switch (provider) {
+    case AIProvider.GROK:
+      return !!env.GROK_API_KEY;
+    case AIProvider.OPENAI:
+      return !!env.OPENAI_API_KEY;
+    case AIProvider.GEMINI:
+      return !!env.GEMINI_API_KEY;
+    default:
+      return false;
   }
 }
+
+// Get available providers
+export function getAvailableProviders(): AIProvider[] {
+  return Object.values(AIProvider).filter(isProviderAvailable);
+}
+
+// =============================================================================
+// COST ESTIMATION
+// =============================================================================
+
+// Cost per 1K tokens (approximate, varies by model)
+export const TokenCosts: Record<AIProvider, { input: number; output: number }> = {
+  [AIProvider.GROK]: { input: 0.001, output: 0.002 },      // Very competitive
+  [AIProvider.OPENAI]: { input: 0.003, output: 0.006 },    // Standard
+  [AIProvider.GEMINI]: { input: 0.0005, output: 0.001 },   // Cheapest
+};
+
+export function estimateCost(
+  provider: AIProvider,
+  inputTokens: number,
+  outputTokens: number
+): number {
+  const costs = TokenCosts[provider];
+  return (inputTokens / 1000 * costs.input) + (outputTokens / 1000 * costs.output);
+}
+
+// =============================================================================
+// MODEL INFO
+// =============================================================================
+
+export interface ModelInfo {
+  provider: AIProvider;
+  model: string;
+  contextWindow: number;
+  supportsStreaming: boolean;
+  supportsImages: boolean;
+}
+
+export const ModelRegistry: Record<string, ModelInfo> = {
+  [GrokModels.GROK_4_1_FAST]: {
+    provider: AIProvider.GROK,
+    model: GrokModels.GROK_4_1_FAST,
+    contextWindow: 2_000_000, // 2M context
+    supportsStreaming: true,
+    supportsImages: false,
+  },
+  [GrokModels.GROK_CODE_FAST_1]: {
+    provider: AIProvider.GROK,
+    model: GrokModels.GROK_CODE_FAST_1,
+    contextWindow: 2_000_000,
+    supportsStreaming: true,
+    supportsImages: false,
+  },
+  [GrokModels.GROK_VISION]: {
+    provider: AIProvider.GROK,
+    model: GrokModels.GROK_VISION,
+    contextWindow: 128_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [OpenAIModels.GPT_5]: {
+    provider: AIProvider.OPENAI,
+    model: OpenAIModels.GPT_5,
+    contextWindow: 256_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [OpenAIModels.GPT_5_MINI]: {
+    provider: AIProvider.OPENAI,
+    model: OpenAIModels.GPT_5_MINI,
+    contextWindow: 128_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [OpenAIModels.GPT_5_NANO]: {
+    provider: AIProvider.OPENAI,
+    model: OpenAIModels.GPT_5_NANO,
+    contextWindow: 64_000,
+    supportsStreaming: true,
+    supportsImages: false,
+  },
+  [OpenAIModels.GPT_5_2]: {
+    provider: AIProvider.OPENAI,
+    model: OpenAIModels.GPT_5_2,
+    contextWindow: 256_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [GeminiModels.GEMINI_2_5_FLASH]: {
+    provider: AIProvider.GEMINI,
+    model: GeminiModels.GEMINI_2_5_FLASH,
+    contextWindow: 1_000_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [GeminiModels.GEMINI_2_5_PRO]: {
+    provider: AIProvider.GEMINI,
+    model: GeminiModels.GEMINI_2_5_PRO,
+    contextWindow: 2_000_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [GeminiModels.GEMINI_3_FLASH_PREVIEW]: {
+    provider: AIProvider.GEMINI,
+    model: GeminiModels.GEMINI_3_FLASH_PREVIEW,
+    contextWindow: 1_000_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+  [GeminiModels.GEMINI_3_PRO_PREVIEW]: {
+    provider: AIProvider.GEMINI,
+    model: GeminiModels.GEMINI_3_PRO_PREVIEW,
+    contextWindow: 2_000_000,
+    supportsStreaming: true,
+    supportsImages: true,
+  },
+};
