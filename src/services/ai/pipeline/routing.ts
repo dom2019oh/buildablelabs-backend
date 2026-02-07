@@ -13,8 +13,8 @@ export const AI_PROVIDERS = {
     name: "Grok (xAI)",
     baseUrl: "https://api.x.ai/v1/chat/completions",
     models: {
-      fast: "grok-2-latest",
-      code: "grok-2-latest",
+      fast: "grok-3-mini-fast",
+      code: "grok-3-fast",
       vision: "grok-2-vision-1212",
     },
     maxTokens: 16000,
@@ -277,13 +277,10 @@ export async function callAIWithFallback(
       const apiKey = getApiKey(provider)!;
 
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      let url = config.baseUrl;
+      const url = config.baseUrl;
 
-      if (provider === "gemini") {
-        url = `${config.baseUrl}?key=${apiKey}`;
-      } else {
-        headers["Authorization"] = `Bearer ${apiKey}`;
-      }
+      // All three providers (Grok, Gemini, OpenAI) use OpenAI-compatible Bearer auth
+      headers["Authorization"] = `Bearer ${apiKey}`;
 
       console.log(`[Routing] ${task} → ${config.name} (${model})`);
 
